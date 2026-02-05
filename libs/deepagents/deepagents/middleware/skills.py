@@ -155,7 +155,7 @@ class SkillsState(AgentState):
     """State for the skills middleware."""
 
     skills_metadata: NotRequired[Annotated[list[SkillMetadata], PrivateStateAttr]]
-    """List of loaded skill metadata from configured sources. Not propagated to parent agents."""
+    """List of loaded skill metadata from all configured sources."""
 
 
 class SkillsStateUpdate(TypedDict):
@@ -312,7 +312,22 @@ def _list_skills(backend: BackendProtocol, source_path: str) -> list[SkillMetada
         skill_dirs.append(item["path"])
 
     if not skill_dirs:
-        return []
+        # Check if the source path itself is a skill directory (contains SKILL.md)
+        # This supports the use case where the user provides a direct path to a skill
+        # e.g., source_path="/skills/user/my-skill"
+        
+        # Check if SKILL.md is in the items list
+        is_direct_skill = False
+        for item in items:
+             if not item.get("is_dir") and item.get("name") == "SKILL.md":
+                 is_direct_skill = True
+                 break
+        
+        if is_direct_skill:
+            # Treat source_path as the skill directory
+            skill_dirs = [source_path]
+        else:
+            return []
 
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
@@ -387,7 +402,22 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
         skill_dirs.append(item["path"])
 
     if not skill_dirs:
-        return []
+        # Check if the source path itself is a skill directory (contains SKILL.md)
+        # This supports the use case where the user provides a direct path to a skill
+        # e.g., source_path="/skills/user/my-skill"
+        
+        # Check if SKILL.md is in the items list
+        is_direct_skill = False
+        for item in items:
+             if not item.get("is_dir") and item.get("name") == "SKILL.md":
+                 is_direct_skill = True
+                 break
+        
+        if is_direct_skill:
+            # Treat source_path as the skill directory
+            skill_dirs = [source_path]
+        else:
+            return []
 
     # For each skill directory, check if SKILL.md exists and download it
     skill_md_paths = []
