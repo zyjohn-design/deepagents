@@ -1,0 +1,79 @@
+# Skills Agent Configuration
+# Copy this file to config.yaml and adjust as needed.
+# All values shown are defaults.
+# Environment variables (SKILLS_AGENT_* prefix) override this file.
+
+llm:
+  model: "openai:gpt-4o"         # "provider:model" format, see examples below
+  temperature: 0.0
+  max_tokens: 4096
+  max_retries: 3                  # Exponential backoff retries on LLM failure
+  retry_delay: 1.0                # Initial delay in seconds (doubles each retry)
+  api_key: ""                     # Leave empty to auto-read from env (OPENAI_API_KEY etc.)
+  base_url: ""                    # Custom API endpoint (leave empty for default)
+  timeout: 120
+
+  # ── Cloud provider examples ──
+  # model: "openai:gpt-4o"
+  # model: "openai:gpt-4o-mini"
+  # model: "anthropic:claude-sonnet-4-5-20250929"
+  # model: "deepseek:deepseek-chat"
+  # model: "google:gemini-2.0-flash"
+
+  # ── Local model examples (OpenAI-compatible API) ──
+  # All local providers use ChatOpenAI under the hood.
+  # base_url auto-inferred per provider, or set manually.
+  #
+  # Ollama (default: http://localhost:11434/v1)
+  # model: "ollama:qwen2.5:72b"
+  # model: "ollama:llama3.1:8b"
+  # model: "ollama:deepseek-r1:14b"
+  #
+  # vLLM (default: http://localhost:8000/v1)
+  # model: "vllm:Qwen/Qwen2.5-72B-Instruct"
+  # base_url: "http://gpu-server:8000/v1"     # remote GPU server
+  #
+  # LM Studio (default: http://localhost:1234/v1)
+  # model: "lmstudio:deepseek-coder-v2-lite"
+  #
+  # llama.cpp server (default: http://localhost:8080/v1)
+  # model: "llamacpp:my-gguf-model"
+  #
+  # Xinference (default: http://localhost:9997/v1)
+  # model: "xinference:qwen2.5-instruct"
+  #
+  # Generic local (default: http://localhost:8000/v1)
+  # model: "local:my-custom-model"
+  # base_url: "http://10.0.0.5:8080/v1"
+
+log:
+  level: "INFO"                   # DEBUG / INFO / WARNING / ERROR
+  format: "rich"                  # "rich" (colored console) / "json" / "text"
+  file: ""                        # Path to log file (empty = console only)
+  file_max_bytes: 10485760        # 10 MB
+  file_backup_count: 3
+  show_timestamp: true
+  show_module: true
+  quiet_loggers:                  # Suppress noisy third-party loggers
+    - httpx
+    - httpcore
+    - openai
+    - anthropic
+    - urllib3
+
+executor:
+  work_dir: ""                    # Empty = auto temp directory
+  script_timeout_python: 120      # Seconds
+  script_timeout_shell: 60
+
+agent:
+  max_iterations: 25              # Max agent loop iterations before forced stop
+  system_prompt: ""               # Additional instructions appended to default prompt
+  stream_mode: "updates"          # "updates" / "values"
+
+# Skill sources (can also be set via constructor)
+skill_dirs:
+  # - "./skills/public/"
+  # - "./skills/user/"
+skill_paths:
+  # - "./my_project/custom_skill/"
