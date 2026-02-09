@@ -1,0 +1,42 @@
+{
+  "affected_areas": [
+    {
+      "area_name": "核心管控区",
+      "type": "管控区",
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 18:00",
+      "end_time": "2027-01-01 01:00",
+      "boundaries": "中山路（含）以南、长江路（含）以北区域。",
+      "control_measures": "禁止机动车通行，允许行人通行。"
+    },
+    {
+      "area_name": "中端疏导区",
+      "type": "管控区",
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 18:00",
+      "end_time": "2027-01-01 01:00",
+      "boundaries": "核心区外围500米范围。",
+      "control_measures": "视情分流，禁止车辆停放。"
+    }
+  ],
+  "tasks": [
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 18:00",
+      "end_time": "2027-01-01 01:00",
+      "control_type": "车辆管控",
+      "description": "核心管控区禁止机动车通行，允许行人通行。",
+      "action": "禁止通行",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 18:00",
+      "end_time": "2027-01-01 01:00",
+      "control_type": "车辆管控",
+      "description": "疏导区视情分流，禁止车辆停放。",
+      "action": "视情分流",
+      "affected_area": "中端疏导区"
+    }
+  ]
+}
