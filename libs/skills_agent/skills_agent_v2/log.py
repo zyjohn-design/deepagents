@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from .config import LogSettings
 
 # Package-level logger namespace
-LOGGER_NAME = "skills_agent"
+LOGGER_NAME = "skills_agent_v2"
 
 _is_setup = False
 
