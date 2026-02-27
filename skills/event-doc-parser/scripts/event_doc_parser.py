@@ -23,12 +23,33 @@ import json
 import os
 import re
 from pathlib import Path
+
+# 清除代理设置，避免干扰本地请求
+os.environ.pop("HTTP_PROXY", None)
+os.environ.pop("HTTPS_PROXY", None)
+os.environ.pop("http_proxy", None)
+os.environ.pop("https_proxy", None)
+
 from typing import List, Optional, Iterable, Any, Set, Tuple, Dict, Literal, get_args
 from enum import Enum  # 保留备用
 
 import instructor
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
+
+# 移除项目配置依赖，改为从环境变量获取
+class Settings:
+    """Simple settings class to replace src.config.settings"""
+    def __init__(self):
+        self.MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
+        self.OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+        self.OPENAI_API_BASE = os.getenv("OPENAI_API_BASE", "https://api.openai.com/v1")
+
+    def get(self, key, default=None):
+        return os.getenv(key, default)
+
+settings = Settings()
+
 
 # ==============================================================================
 # 1. 文档结构解析器 — 将 Markdown 按标题层级切分为语义段落
@@ -242,12 +263,16 @@ class EventDocExtractor:
         self.extraction_rules = self._load_file("references/extraction_rules.md")
 
         # LLM 配置
-        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("MODEL_URL")
+        base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("MODEL_URL") or os.getenv("OPENAI_API_BASE")
         api_key = os.getenv("OPENAI_API_KEY") or os.getenv("API_KEY")
-        self.model_name = os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME") or "gpt-4o"
+        self.model_name = os.getenv("OPENAI_MODEL_NAME") or os.getenv("MODEL_NAME")
+
+        # 去掉 local: 前缀，因为 OpenAI SDK 不需要这个
+        if self.model_name and self.model_name.startswith("local:"):
+            self.model_name = self.model_name.replace("local:", "")
 
         self.client = instructor.from_openai(
-            OpenAI(base_url=base_url, api_key=api_key),
+            OpenAI(base_url=base_url, api_key=api_key, timeout=120.0),
             mode=instructor.Mode.JSON,
         )
 
