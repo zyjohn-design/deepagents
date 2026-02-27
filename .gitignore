@@ -223,3 +223,7 @@ libs/cli/TEXTUAL_PROGRESS.md
 */tmp/.DS_Store
 
 CLAUDE.md
+
+# Workspace
+libs/skills_agent/workspace/
+libs/skills_agent/test_llm_connectivity.py
