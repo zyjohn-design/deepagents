@@ -40,22 +40,41 @@ from pydantic import BaseModel, Field, create_model
 import logging
 import sys
 
-def _setup_script_logger(name: str = "skills_agent.script") -> logging.Logger:
-    """创建输出到 stderr 的 logger，格式与框架一致。"""
+def _setup_logger(name: str = "skills_agent.script") -> logging.Logger:
+    """创建写文件的 logger，格式与框架一致。stdout 保持干净。"""
     logger = logging.getLogger(name)
-    if not logger.handlers:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter(
+    if logger.handlers:
+        return logger
+
+    level = os.getenv("SKILLS_AGENT_LOG_LEVEL", "INFO").upper()
+    logger.setLevel(getattr(logging, level, logging.INFO))
+
+    # 日志文件路径：脚本同目录的 ../logs/ 或环境变量指定
+    log_dir = Path(os.getenv("SKILLS_AGENT_LOG_DIR",
+                              str(Path(__file__).resolve().parent.parent / "logs")))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / f"{name.split('.')[-1]}.log"
+
+    handler = logging.FileHandler(str(log_file), encoding="utf-8")
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    logger.addHandler(handler)
+
+    # 可选：同时输出到 stderr（开发调试时设 SKILLS_AGENT_LOG_STDERR=1）
+    if os.getenv("SKILLS_AGENT_LOG_STDERR", "").strip() in ("1", "true"):
+        import sys
+        stderr_handler = logging.StreamHandler(sys.stderr)
+        stderr_handler.setFormatter(logging.Formatter(
             "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
             datefmt="%H:%M:%S",
         ))
-        logger.addHandler(handler)
-    # 从环境变量读取日志级别，默认 INFO
-    level = os.getenv("SKILLS_AGENT_LOG_LEVEL", "INFO").upper()
-    logger.setLevel(getattr(logging, level, logging.INFO))
+        logger.addHandler(stderr_handler)
+
     return logger
 
-logger = _setup_script_logger("skills.event_doc_parser")
+logger = _setup_logger("skills_agent.event_doc_parser")
 
 # 移除项目配置依赖，改为从环境变量获取
 class Settings:
@@ -1074,13 +1093,11 @@ def main():
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    logger.info(f"\n{'=' * 60}")
-    logger.info(f"提取完成！")
-    logger.info(f"  区域: {len(result['affected_areas'])} 条（含分阶段记录）")
-    logger.info(f"  任务: {len(result['tasks'])} 条")
-    logger.info(f"  输出: {output_file}")
-    # 大模型使用的输出日志
-    print(f"任务完成，输出: {output_file}")
+
+    print(f"提取完成！")
+    print(f"  区域: {len(result['affected_areas'])} 条（含分阶段记录）")
+    print(f"  任务: {len(result['tasks'])} 条")
+    logger.info(f"  文档解析完成，输出: {output_file}")
 
 
 if __name__ == "__main__":
