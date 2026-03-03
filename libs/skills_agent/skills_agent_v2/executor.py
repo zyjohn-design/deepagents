@@ -342,19 +342,35 @@ class SkillExecutor:
         """Execute script with optional dynamic arguments.
 
         Params:
-            script: Script filename (e.g. "transform.py")
-            args:   (optional) Command-line arguments string
-            env:    (optional) Extra environment variables as "K=V,K2=V2"
+            script:  Script filename (e.g. "transform.py", "setup.sh")
+            args:    (optional) Command-line arguments string
+            command: (optional) Custom command prefix, e.g. "uv run python", "node"
+            env:     (optional) Extra environment variables as "K=V,K2=V2"
         """
         script_name = step.params.get("script", "")
         extra_args = step.params.get("args", "")
+        command_prefix = step.params.get("command", "")
         extra_env_str = step.params.get("env", "")
 
         if script_name not in skill.scripts:
             return StepResult(step_index=step.index, success=False,
                               error=f"Script '{script_name}' not found. Available: {list(skill.scripts.keys())}")
 
-        script_content = skill.scripts[script_name]
+        # Resolve script path — prefer original on disk
+        script_path = None
+        cwd = str(self._work_dir)
+        if skill.path:
+            on_disk = skill.path.parent / "scripts" / script_name
+            if on_disk.exists():
+                script_path = str(on_disk)
+                cwd = str(skill.path.parent)
+
+        if not script_path:
+            script_content = skill.scripts[script_name]
+            tmp_path = self._work_dir / f"step_{step.index}_{script_name}"
+            tmp_path.write_text(script_content, encoding="utf-8")
+            tmp_path.chmod(0o755)
+            script_path = str(tmp_path)
 
         # Parse extra environment variables
         env = None
@@ -366,41 +382,53 @@ class SkillExecutor:
                     k, v = pair.split("=", 1)
                     env[k.strip()] = v.strip()
 
-        if script_name.endswith(".py"):
-            return self._run_python_script(step.index, script_name, script_content, extra_args, env)
-        elif script_name.endswith(".sh"):
-            return self._run_shell_script(step.index, script_name, script_content, extra_args, env)
-        return StepResult(step_index=step.index, success=False,
-                          error=f"Unsupported script type: {script_name}")
+        return self._run_script(step.index, script_name, script_path,
+                                extra_args, command_prefix, env, cwd)
 
-    def _run_python_script(self, step_index: int, name: str, script: str,
-                           args: str, env: dict | None) -> StepResult:
-        script_path = self._work_dir / f"step_{step_index}_{name}"
-        script_path.write_text(script, encoding="utf-8")
-        cmd = ["python3", str(script_path)]
+    # Runner map: extension → default command
+    _RUNNERS: dict[str, list[str]] = {
+        ".py": ["python3"],
+        ".sh": ["bash"],
+        ".bash": ["bash"],
+        ".js": ["node"],
+        ".ts": ["npx", "tsx"],
+        ".rb": ["ruby"],
+        ".pl": ["perl"],
+    }
+
+    def _run_script(self, step_index: int, name: str, script_path: str,
+                    args: str, command: str, env: dict | None,
+                    cwd: str | None = None) -> StepResult:
+        """Execute any script. Auto-detects runner by extension or uses custom command."""
+        # Build command
+        if command:
+            cmd = command.split() + [script_path]
+        else:
+            ext = Path(name).suffix.lower()
+            runner = self._RUNNERS.get(ext)
+            if runner:
+                cmd = runner + [script_path]
+            else:
+                cmd = [script_path]  # direct execution
+
         if args:
             cmd.extend(args.split())
-        logger.debug("Running: %s", " ".join(cmd))
+
+        run_cwd = cwd or str(self._work_dir)
+        timeout = self._timeout_shell if Path(name).suffix.lower() in (".sh", ".bash") else self._timeout_python
+        logger.debug("Running: %s (cwd=%s, timeout=%ds)", " ".join(cmd), run_cwd, timeout)
+
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  timeout=self._timeout_python, cwd=str(self._work_dir), env=env)
+                                  timeout=timeout, cwd=run_cwd, env=env)
             return StepResult(step_index=step_index, success=proc.returncode == 0,
                               output=proc.stdout, error=proc.stderr if proc.returncode != 0 else "")
         except subprocess.TimeoutExpired:
             return StepResult(step_index=step_index, success=False,
-                              error=f"Script '{name}' timed out ({self._timeout_python}s)")
-
-    def _run_shell_script(self, step_index: int, name: str, script: str,
-                          args: str, env: dict | None) -> StepResult:
-        full_script = f"{script} {args}" if args else script
-        try:
-            proc = subprocess.run(["bash", "-c", full_script], capture_output=True, text=True,
-                                  timeout=self._timeout_shell, cwd=str(self._work_dir), env=env)
-            return StepResult(step_index=step_index, success=proc.returncode == 0,
-                              output=proc.stdout, error=proc.stderr if proc.returncode != 0 else "")
-        except subprocess.TimeoutExpired:
+                              error=f"Script '{name}' timed out ({timeout}s)")
+        except FileNotFoundError:
             return StepResult(step_index=step_index, success=False,
-                              error=f"Script '{name}' timed out ({self._timeout_shell}s)")
+                              error=f"Command not found: {cmd[0]}")
 
     # ------------------------------------------------------------------
     # Action: invoke_skill (skill composition)

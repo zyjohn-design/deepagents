@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 # Tool Definitions
 # ======================================================================
 
+
 def create_skill_tools(skill_loader: SkillLoader, skill_executor: SkillExecutor):
     """Create LangChain tools that operate on the skill system."""
 
@@ -180,14 +181,29 @@ def create_skill_tools(skill_loader: SkillLoader, skill_executor: SkillExecutor)
         return "\n".join(parts)
 
     @tool
-    def run_skill_script(skill_name: str, script_name: str) -> str:
-        """Run a specific script from a skill.
+    def run_skill_script(skill_name: str, script_name: str, script_args: str = "",
+                         command: str = "", work_dir: str = "") -> str:
+        """Run a script from a skill with command-line arguments.
+
+        The script runs in the skill's own directory by default.
+
+        Auto-detected by extension when command is empty:
+          .py -> python3, .sh -> bash, .js -> node, .ts -> npx tsx
+
+        Use "command" to override: "uv run python", "node", "bash", etc.
+
+        NOTE: File paths must not contain spaces. Use underscores or hyphens.
 
         Args:
-            skill_name: Name of the skill.
+            skill_name: Name of the skill containing the script.
             script_name: Name of the script file.
+            script_args: Arguments string, space-separated.
+                  Example: "/path/to/input.md scene_type 2026-12-31"
+            command: Custom command prefix. Overrides auto-detection.
+            work_dir: Working directory override. Default: skill directory.
         """
-        logger.info("Tool run_skill_script: skill='%s', script='%s'", skill_name, script_name)
+        logger.info("Tool run_skill_script: skill='%s', script='%s', script_args='%s', cmd='%s'",
+                     skill_name, script_name, script_args[:200], command)
         skill = skill_loader.get_skill(skill_name)
         if not skill:
             return f"Skill '{skill_name}' not found."
@@ -197,15 +213,74 @@ def create_skill_tools(skill_loader: SkillLoader, skill_executor: SkillExecutor)
         if script_name not in skill.scripts:
             return f"Script '{script_name}' not found. Available: {list(skill.scripts.keys())}"
 
-        from .models import SkillStep
-        step = SkillStep(
-            index=0, description=f"Run {script_name}",
-            action="run_script", params={"script": script_name},
-        )
-        result = skill_executor._execute_step(step, skill, {}, {})
-        if result.success:
-            return f"Script executed successfully:\n{result.output}"
-        return f"Script failed:\n{result.error}"
+        # Working directory
+        if work_dir:
+            cwd = work_dir
+        elif skill.path:
+            cwd = str(skill.path.parent)
+        else:
+            cwd = None
+
+        # Resolve script path (prefer original on disk)
+        script_path = None
+        if skill.path:
+            on_disk = skill.path.parent / "scripts" / script_name
+            if on_disk.exists():
+                script_path = str(on_disk)
+        if not script_path:
+            import tempfile as _tf
+            tmp = Path(_tf.mkdtemp()) / script_name
+            tmp.write_text(skill.scripts[script_name], encoding="utf-8")
+            tmp.chmod(0o755)
+            script_path = str(tmp)
+
+        # Build command list
+        if command:
+            cmd = command.split() + [script_path]
+        else:
+            ext = Path(script_name).suffix.lower()
+            runners = {
+                ".py": ["python3"], ".sh": ["bash"], ".bash": ["bash"],
+                ".js": ["node"], ".ts": ["npx", "tsx"], ".rb": ["ruby"], ".pl": ["perl"],
+            }
+            runner = runners.get(ext, [])
+            cmd = runner + [script_path] if runner else [script_path]
+
+        if script_args:
+            cmd.extend(script_args.split())
+
+        cmd_str = " ".join(cmd)
+        logger.info("Executing: %s (cwd=%s)", cmd_str, cwd)
+
+        import subprocess
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=600, cwd=cwd,
+            )
+            parts = []
+            if proc.returncode == 0:
+                parts.append("[OK]")
+                logger.info("Script succeeded: %d chars", len(proc.stdout))
+            else:
+                parts.append(f"[FAILED] Exit code: {proc.returncode}")
+                logger.warning("Script failed (rc=%d)", proc.returncode)
+            parts.append("")
+            if proc.stdout:
+                parts.append(proc.stdout.rstrip())
+            if proc.stderr:
+                if proc.stdout:
+                    parts.append("")
+                parts.append("--- stderr ---")
+                parts.append(proc.stderr.rstrip())
+            if not proc.stdout and not proc.stderr:
+                parts.append("(no output)")
+            parts.append(f"\n[cmd: {cmd_str}]")
+            return "\n".join(parts)
+        except subprocess.TimeoutExpired:
+            return f"[FAILED] Timed out after 300s.\n[cmd: {cmd_str}]"
+        except Exception as e:
+            return f"[FAILED] {e}\n[cmd: {cmd_str}]"
+
 
     @tool
     def search_skill_reference(skill_name: str, query: str, file_name: str = "", top_k: int = 3) -> str:
@@ -284,9 +359,62 @@ def create_skill_tools(skill_loader: SkillLoader, skill_executor: SkillExecutor)
             return f"Sub-skill '{skill_name}' completed:\n{result.final_output}"
         return f"Sub-skill '{skill_name}' failed: {result.error}"
 
+    @tool
+    def run_command(command: str) -> str:
+        """Execute a shell command in the project root directory.
+
+        Use this for general system operations: file management, format
+        conversion, dependency installation, or any shell command that
+        doesn't fit into a specific skill script.
+
+        The command runs with shell=True, so pipes, redirects, and
+        chaining (&&, ||, ;) all work.
+
+        Args:
+            command: Shell command string to execute.
+                     Examples:
+                       "ls -la docs/"
+                       "uv run python scripts/convert.py input.pdf"
+                       "cat output.json | jq '.results'"
+                       "wc -l *.md"
+        """
+        import os as _os
+        logger.info("Tool run_command: %s", command)
+        cwd = _os.getcwd()
+        try:
+            import subprocess as _sp
+            proc = _sp.run(
+                command, shell=True, cwd=cwd,
+                capture_output=True, text=True, timeout=300,
+            )
+            parts = []
+            if proc.returncode == 0:
+                parts.append("[OK]")
+                logger.info("run_command succeeded: %s", command)
+            else:
+                parts.append(f"[FAILED] Exit code: {proc.returncode}")
+                logger.warning("run_command failed (rc=%d): %s", proc.returncode, command[:100])
+            parts.append("")
+            if proc.stdout:
+                parts.append(proc.stdout.rstrip())
+            if proc.stderr:
+                if proc.stdout:
+                    parts.append("")
+                parts.append("--- stderr ---")
+                parts.append(proc.stderr.rstrip())
+            if not proc.stdout and not proc.stderr:
+                parts.append("(no output)")
+            return "\n".join(parts)
+        except subprocess.TimeoutExpired:
+            logger.error("run_command timed out: %s", command[:100])
+            return "[FAILED] Command timed out after 300 seconds."
+        except Exception as e:
+            logger.error("run_command error: %s", e)
+            return f"[FAILED] {e}"
+
     return [list_skills, read_skill, read_skill_reference, search_skill_reference,
             get_reference_toc, invoke_skill,
-            write_todos, execute_skill_workflow, run_skill_script]
+            write_todos, execute_skill_workflow, run_skill_script, run_command]
 
 
 # ======================================================================
@@ -443,7 +571,7 @@ def create_agent_graph(
                 observation = tools_by_name[name].invoke(args)
                 obs_str = str(observation)
                 logger.info("  tool_node → '%s' returned %d chars", name, len(obs_str))
-                logger.debug("  tool_node → '%s' output preview: %.200s", name, obs_str)
+                logger.debug("  tool_node → '%s' output preview: %s", name, obs_str)
                 results.append(ToolMessage(
                     content=obs_str,
                     tool_call_id=tool_call["id"],
@@ -452,7 +580,7 @@ def create_agent_graph(
                 # State tracking
                 if name == "read_skill":
                     state_updates["active_skill"] = args.get("skill_name", "")
-                    state_updates["skill_context"] = str(observation)[:2000]
+                    state_updates["skill_context"] = str(observation)
                 elif name == "write_todos":
                     state_updates["todo_list"] = [
                         {"index": i, "text": t, "done": False}
