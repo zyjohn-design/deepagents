@@ -27,17 +27,22 @@ from skills_agent_v2.state import StateManager
 def test_event_doc_parser_skill():
     # 1. 配置 LLM 设置
     llm_settings = LLMSettings(
-        model="local:Qwen3-32B", # 使用 local provider
-        base_url="http://219.147.31.25:30001/v1",
+        model="local:Qwen3.5-35B-A3B", # 使用 local provider  Qwen3-32B
+        base_url="http://219.147.31.25:8983/v1",
         api_key="EMPTY",
         max_tokens=2048, # 降低 Max Tokens 避免超时或内存问题
         temperature=0.0,
     )
+    # 添加环境变量 OPENAI_API_KEY
+    os.environ["OPENAI_API_KEY"] = "EMPTY"
+    os.environ["OPENAI_API_BASE"] = "http://219.147.31.25:8983/v1"
+    os.environ["MODEL_NAME"] = "Qwen3.5-35B-A3B"
+
 
     # 1.5 配置日志设置
     log_settings = LogSettings(
         file="agent_test.log",
-        level="INFO",
+        level="DEBUG",
         show_timestamp=True,
         show_module=True,
         file_max_bytes=10 * 1024 * 1024, # 10 MB
@@ -86,7 +91,7 @@ def test_event_doc_parser_skill():
     )
 
     # 6. 构造输入并运行
-    file_path = "/Users/zhangyong/Documents/project/deepagents/libs/skills_agent/skills/event-doc-parser/tests/（新）【意见征求稿1217】附件2：2026跨年夜江北片区实施方案.md"
+    file_path = "/Users/zhangyong/Documents/project/deepagents/skills/event-doc-parser/tests/新意见征求稿附件跨年夜江北片区实施方案.md"
     user_input = f"请解析大型活动文件：{file_path}"
 
     print(f"\n>>> User Input: {user_input}")
