@@ -1,12 +1,25 @@
 """
-Skill Executor - Runs skill workflows step by step.
+Skill Executor — runs skill workflows step by step.
 
-Handles:
-  - Sequential and dependency-based step execution
-  - LLM-driven step interpretation
-  - Script execution (Python, bash)
-  - Reference file reading on demand
-  - Progress tracking
+Built-in actions:
+  read_file         Read a file from disk
+  read_reference    Read a full reference file
+  search_reference  Search within references (keyword/section, saves tokens)
+  run_script        Execute Python/shell script (supports dynamic args via templates)
+  invoke_skill      Call another skill's workflow (skill composition)
+  llm_reason        LLM interprets and executes the step (default)
+
+Template variables in step params:
+  ${step.N.output}            → output text of step N
+  ${step.N.artifact.KEY}      → specific artifact from step N
+  ${context.KEY}              → value from the context dict
+
+Example SKILL.md workflow:
+  ## 核心工作流
+  步骤1: 查询API认证文档 [action=search_reference, query=认证 token, file=api_doc.md]
+  步骤2: 提取参数配置 [action=llm_reason]
+  步骤3: 运行转换脚本 [action=run_script, script=transform.py, args=--config ${step.2.output}]
+  步骤4: 验证数据 [action=invoke_skill, skill=data-validator, input=${step.3.output}]
 """
 
 from __future__ import annotations
@@ -14,14 +27,20 @@ from __future__ import annotations
 import logging
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from .models import Skill, SkillStatus, SkillStep
+from .reference import ReferenceManager
 
 logger = logging.getLogger(__name__)
 
+
+# ======================================================================
+# Result types
+# ======================================================================
 
 @dataclass
 class StepResult:
@@ -30,6 +49,8 @@ class StepResult:
     success: bool
     output: str = ""
     error: str = ""
+    action: str = ""
+    duration_ms: float = 0.0
     artifacts: dict[str, Any] = field(default_factory=dict)
 
 
@@ -41,6 +62,7 @@ class WorkflowResult:
     step_results: list[StepResult] = field(default_factory=list)
     final_output: str = ""
     error: str = ""
+    total_duration_ms: float = 0.0
 
     @property
     def completed_steps(self) -> int:
@@ -54,280 +76,437 @@ class WorkflowResult:
         status = "✅ Success" if self.success else "❌ Failed"
         return (
             f"Workflow [{self.skill_name}] {status} "
-            f"({self.completed_steps}/{self.total_steps} steps completed)"
+            f"({self.completed_steps}/{self.total_steps} steps, "
+            f"{self.total_duration_ms:.0f}ms)"
         )
 
 
+# Action handler type
+ActionHandler = Callable[
+    ["SkillStep", "Skill", dict[str, Any], dict[int, "StepResult"]],
+    "StepResult",
+]
+
+
+# ======================================================================
+# Executor
+# ======================================================================
+
 class SkillExecutor:
-    """Executes skill workflows with support for various action types."""
+    """Executes skill workflows (Mode B: pipeline execution).
+
+    Each step's params can use ${...} template variables to reference
+    previous step outputs, enabling dynamic parameter passing.
+    """
 
     def __init__(
         self,
         llm_callback: Callable[[str, str], str] | None = None,
+        skill_loader: Any | None = None,
         work_dir: str | Path | None = None,
+        script_timeout_python: int = 120,
+        script_timeout_shell: int = 60,
     ):
         """
         Args:
-            llm_callback: A function(system_prompt, user_message) -> str
-                          for steps that need LLM reasoning.
+            llm_callback: (system_prompt, user_message) -> str for LLM steps.
+            skill_loader: SkillLoader instance (needed for invoke_skill action).
             work_dir: Working directory for script execution.
+            script_timeout_python: Python script timeout (seconds).
+            script_timeout_shell: Shell script timeout (seconds).
         """
         self._llm_callback = llm_callback
+        self._skill_loader = skill_loader
         self._work_dir = Path(work_dir) if work_dir else Path(tempfile.mkdtemp())
         self._work_dir.mkdir(parents=True, exist_ok=True)
+        self._timeout_python = script_timeout_python
+        self._timeout_shell = script_timeout_shell
+        self._actions: dict[str, ActionHandler] = {}
+        self._ref_managers: dict[str, ReferenceManager] = {}
+
+        logger.info(
+            "SkillExecutor initialized: work_dir=%s, llm=%s, loader=%s",
+            self._work_dir, "yes" if llm_callback else "no",
+            "yes" if skill_loader else "no",
+        )
+
+    def register_action(self, name: str, handler: ActionHandler) -> None:
+        """Register a custom action handler."""
+        self._actions[name] = handler
+        logger.info("Registered custom action: '%s'", name)
+
+    def _get_ref_manager(self, skill: Skill) -> ReferenceManager:
+        """Get or create a ReferenceManager for a skill (lazy, cached)."""
+        if skill.id not in self._ref_managers:
+            mgr = ReferenceManager()
+            mgr.index_skill_references(skill)
+            self._ref_managers[skill.id] = mgr
+        return self._ref_managers[skill.id]
+
+    # ------------------------------------------------------------------
+    # Workflow execution
+    # ------------------------------------------------------------------
 
     def execute_workflow(
         self,
         skill: Skill,
         context: dict[str, Any] | None = None,
     ) -> WorkflowResult:
-        """Execute all workflow steps in a skill sequentially."""
+        """Execute all workflow steps sequentially with template resolution."""
+        workflow_start = time.monotonic()
+
         if not skill.workflow_steps:
+            logger.info("[%s] No workflow steps, reference-only skill", skill.id)
             return WorkflowResult(
-                skill_name=skill.id,
-                success=True,
-                final_output="No workflow steps defined. Skill loaded for reference only.",
+                skill_name=skill.id, success=True,
+                final_output="No workflow steps defined.",
             )
 
+        logger.info("━━━ Workflow START: '%s' (%d steps) ━━━", skill.id, len(skill.workflow_steps))
         skill.status = SkillStatus.EXECUTING
         result = WorkflowResult(skill_name=skill.id, success=True)
-        ctx = context or {}
+        ctx = dict(context or {})
         step_outputs: dict[int, StepResult] = {}
 
         for step in sorted(skill.workflow_steps, key=lambda s: s.index):
-            # Check dependencies
+            # Dependency check
             for dep in step.depends_on:
                 dep_result = step_outputs.get(dep)
                 if not dep_result or not dep_result.success:
-                    step_result = StepResult(
-                        step_index=step.index,
-                        success=False,
-                        error=f"Dependency step {dep} not completed",
-                    )
-                    result.step_results.append(step_result)
+                    logger.error("[%s] Step %d BLOCKED by dep %d", skill.id, step.index, dep)
+                    sr = StepResult(step_index=step.index, success=False,
+                                    error=f"Dependency step {dep} not completed", action="dep_check")
+                    result.step_results.append(sr)
                     result.success = False
-                    result.error = f"Step {step.index} blocked by dependency {dep}"
+                    result.error = f"Step {step.index} blocked by dep {dep}"
                     skill.status = SkillStatus.FAILED
+                    result.total_duration_ms = (time.monotonic() - workflow_start) * 1000
                     return result
 
-            # Execute step
-            logger.info("Executing step %d: %s", step.index, step.description)
-            step_result = self._execute_step(step, skill, ctx, step_outputs)
-            step_outputs[step.index] = step_result
-            result.step_results.append(step_result)
+            # Resolve template variables in params
+            resolved_params = step.resolve_params(ctx, step_outputs)
+            logger.info("[%s] Step %d/%d: %s (action=%s)",
+                        skill.id, step.index, len(skill.workflow_steps),
+                        step.description[:60], step.action or "llm_reason")
+            if resolved_params != step.params:
+                logger.debug("[%s] Step %d: params resolved: %s → %s",
+                             skill.id, step.index, step.params, resolved_params)
 
-            if not step_result.success:
+            # Execute with resolved params
+            resolved_step = SkillStep(
+                index=step.index, description=step.description,
+                action=step.action, params=resolved_params,
+                depends_on=step.depends_on, raw_description=step.raw_description,
+            )
+            sr = self._execute_step(resolved_step, skill, ctx, step_outputs)
+            step_outputs[step.index] = sr
+            result.step_results.append(sr)
+
+            if sr.success:
+                logger.info("[%s] Step %d ✅ (%s, %dms, %d chars)",
+                            skill.id, step.index, sr.action, sr.duration_ms, len(sr.output))
+            else:
+                logger.error("[%s] Step %d ❌ (%s): %s", skill.id, step.index, sr.action, sr.error)
                 result.success = False
-                result.error = f"Step {step.index} failed: {step_result.error}"
+                result.error = f"Step {step.index} failed: {sr.error}"
                 skill.status = SkillStatus.FAILED
+                result.total_duration_ms = (time.monotonic() - workflow_start) * 1000
                 return result
 
-            # Update context with step artifacts
-            ctx.update(step_result.artifacts)
+            ctx.update(sr.artifacts)
 
-        # Collect final output
         if result.step_results:
             result.final_output = result.step_results[-1].output
-
         skill.status = SkillStatus.COMPLETED
+        result.total_duration_ms = (time.monotonic() - workflow_start) * 1000
+        logger.info("━━━ Workflow DONE: '%s' ✅ (%d/%d, %.0fms) ━━━",
+                     skill.id, result.completed_steps, result.total_steps, result.total_duration_ms)
         return result
 
-    def _execute_step(
-        self,
-        step: SkillStep,
-        skill: Skill,
-        context: dict[str, Any],
-        prev_results: dict[int, StepResult],
-    ) -> StepResult:
-        """Execute a single workflow step."""
-        action = step.action.lower() if step.action else "llm_reason"
+    # ------------------------------------------------------------------
+    # Step dispatcher
+    # ------------------------------------------------------------------
 
+    def _execute_step(self, step: SkillStep, skill: Skill,
+                      context: dict[str, Any], prev: dict[int, StepResult]) -> StepResult:
+        action = step.action.lower().strip() if step.action else ""
+        start = time.monotonic()
         try:
             if action == "read_file":
-                return self._action_read_file(step, skill)
-            elif action == "run_script":
-                return self._action_run_script(step, skill, context)
+                r = self._action_read_file(step, skill)
             elif action == "read_reference":
-                return self._action_read_reference(step, skill)
-            elif action in ("llm_call", "llm_reason", ""):
-                return self._action_llm_reason(step, skill, context, prev_results)
+                r = self._action_read_reference(step, skill)
+            elif action == "search_reference":
+                r = self._action_search_reference(step, skill)
+            elif action == "run_script":
+                r = self._action_run_script(step, skill, context)
+            elif action == "invoke_skill":
+                r = self._action_invoke_skill(step, skill, context, prev)
+            elif action in ("llm_call", "llm_reason"):
+                r = self._action_llm_reason(step, skill, context, prev)
+            elif action in self._actions:
+                r = self._actions[action](step, skill, context, prev)
+            elif action == "":
+                r = self._action_llm_reason(step, skill, context, prev)
             else:
-                return self._action_llm_reason(step, skill, context, prev_results)
+                logger.warning("[%s] Unknown action '%s', fallback to llm_reason", skill.id, action)
+                r = self._action_llm_reason(step, skill, context, prev)
+            r.action = action or "llm_reason"
+            r.duration_ms = (time.monotonic() - start) * 1000
+            return r
         except Exception as e:
-            logger.exception("Step %d execution error", step.index)
-            return StepResult(
-                step_index=step.index,
-                success=False,
-                error=str(e),
-            )
+            elapsed = (time.monotonic() - start) * 1000
+            logger.exception("[%s] Step %d EXCEPTION: %s", skill.id, step.index, e)
+            return StepResult(step_index=step.index, success=False, error=str(e),
+                              action=action or "llm_reason", duration_ms=elapsed)
 
     # ------------------------------------------------------------------
-    # Action handlers
+    # Action: read_file
     # ------------------------------------------------------------------
 
     def _action_read_file(self, step: SkillStep, skill: Skill) -> StepResult:
-        """Read a file from the skill directory or filesystem."""
         file_path = step.params.get("path", "")
         if not file_path and skill.path:
-            # Default: read from skill directory
             file_path = str(skill.path.parent / step.params.get("file", ""))
-
         path = Path(file_path)
         if not path.exists():
-            return StepResult(
-                step_index=step.index,
-                success=False,
-                error=f"File not found: {file_path}",
-            )
-
+            return StepResult(step_index=step.index, success=False,
+                              error=f"File not found: {file_path}")
         content = path.read_text(encoding="utf-8")
-        return StepResult(
-            step_index=step.index,
-            success=True,
-            output=content,
-            artifacts={"file_content": content, "file_path": str(path)},
-        )
+        return StepResult(step_index=step.index, success=True, output=content,
+                          artifacts={"file_content": content, "file_path": str(path)})
+
+    # ------------------------------------------------------------------
+    # Action: read_reference (full file)
+    # ------------------------------------------------------------------
 
     def _action_read_reference(self, step: SkillStep, skill: Skill) -> StepResult:
-        """Read a reference file from the skill's references."""
         ref_name = step.params.get("reference", "")
         if ref_name in skill.reference_files:
             content = skill.reference_files[ref_name]
-            return StepResult(
-                step_index=step.index,
-                success=True,
-                output=content,
-                artifacts={"reference_content": content, "reference_name": ref_name},
-            )
-        return StepResult(
-            step_index=step.index,
-            success=False,
-            error=f"Reference '{ref_name}' not found. Available: {list(skill.reference_files.keys())}",
-        )
+            return StepResult(step_index=step.index, success=True, output=content,
+                              artifacts={"reference_content": content, "reference_name": ref_name})
+        return StepResult(step_index=step.index, success=False,
+                          error=f"Reference '{ref_name}' not found. Available: {list(skill.reference_files.keys())}")
 
-    def _action_run_script(
-        self, step: SkillStep, skill: Skill, context: dict[str, Any]
-    ) -> StepResult:
-        """Execute a Python or shell script from the skill."""
+    # ------------------------------------------------------------------
+    # Action: search_reference (keyword search, token-efficient)
+    # ------------------------------------------------------------------
+
+    def _action_search_reference(self, step: SkillStep, skill: Skill) -> StepResult:
+        """Search within indexed references for specific content.
+
+        Params:
+            query:   Search query (keywords or natural language).
+            file:    (optional) Restrict to a specific reference file.
+            section: (optional) Get exact section by heading.
+            top_k:   (optional) Number of results, default 3.
+        """
+        ref_mgr = self._get_ref_manager(skill)
+        query = step.params.get("query", "")
+        file_name = step.params.get("file", None)
+        section = step.params.get("section", "")
+        top_k = int(step.params.get("top_k", "3"))
+
+        # Mode 1: Exact section lookup
+        if section and file_name:
+            content = ref_mgr.get_section(file_name, section)
+            if content:
+                logger.debug("[%s] search_reference: exact section '%s' found (%d chars)",
+                             skill.id, section, len(content))
+                return StepResult(step_index=step.index, success=True, output=content,
+                                  artifacts={"matched_section": section})
+            return StepResult(step_index=step.index, success=False,
+                              error=f"Section '{section}' not found in '{file_name}'. TOC:\n{ref_mgr.get_toc(file_name)}")
+
+        # Mode 2: Keyword search
+        if query:
+            result_text = ref_mgr.search_text(query, top_k=top_k, file_name=file_name)
+            results = ref_mgr.search(query, top_k=top_k, file_name=file_name)
+            matched = [r.section.heading for r in results]
+            logger.debug("[%s] search_reference: query='%s' → %d hits: %s",
+                         skill.id, query, len(results), matched)
+            return StepResult(step_index=step.index, success=True, output=result_text,
+                              artifacts={"matched_sections": matched, "query": query})
+
+        # Mode 3: Return TOC for navigation
+        toc = ref_mgr.get_toc(file_name)
+        return StepResult(step_index=step.index, success=True, output=toc,
+                          artifacts={"toc": toc})
+
+    # ------------------------------------------------------------------
+    # Action: run_script (with dynamic args)
+    # ------------------------------------------------------------------
+
+    def _action_run_script(self, step: SkillStep, skill: Skill, context: dict[str, Any]) -> StepResult:
+        """Execute script with optional dynamic arguments.
+
+        Params:
+            script:  Script filename (e.g. "transform.py", "setup.sh")
+            args:    (optional) Command-line arguments string
+            command: (optional) Custom command prefix, e.g. "uv run python", "node"
+            env:     (optional) Extra environment variables as "K=V,K2=V2"
+        """
         script_name = step.params.get("script", "")
+        extra_args = step.params.get("args", "")
+        command_prefix = step.params.get("command", "")
+        extra_env_str = step.params.get("env", "")
 
         if script_name not in skill.scripts:
-            return StepResult(
-                step_index=step.index,
-                success=False,
-                error=f"Script '{script_name}' not found. Available: {list(skill.scripts.keys())}",
-            )
+            return StepResult(step_index=step.index, success=False,
+                              error=f"Script '{script_name}' not found. Available: {list(skill.scripts.keys())}")
 
-        script_content = skill.scripts[script_name]
+        # Resolve script path — prefer original on disk
+        script_path = None
+        cwd = str(self._work_dir)
+        if skill.path:
+            on_disk = skill.path.parent / "scripts" / script_name
+            if on_disk.exists():
+                script_path = str(on_disk)
+                cwd = str(skill.path.parent)
 
-        if script_name.endswith(".py"):
-            return self._run_python_script(step.index, script_content, context)
-        elif script_name.endswith(".sh"):
-            return self._run_shell_script(step.index, script_content, context)
+        if not script_path:
+            script_content = skill.scripts[script_name]
+            tmp_path = self._work_dir / f"step_{step.index}_{script_name}"
+            tmp_path.write_text(script_content, encoding="utf-8")
+            tmp_path.chmod(0o755)
+            script_path = str(tmp_path)
+
+        # Parse extra environment variables
+        env = None
+        if extra_env_str:
+            import os
+            env = dict(os.environ)
+            for pair in extra_env_str.split(","):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    env[k.strip()] = v.strip()
+
+        return self._run_script(step.index, script_name, script_path,
+                                extra_args, command_prefix, env, cwd)
+
+    # Runner map: extension → default command
+    _RUNNERS: dict[str, list[str]] = {
+        ".py": ["python3"],
+        ".sh": ["bash"],
+        ".bash": ["bash"],
+        ".js": ["node"],
+        ".ts": ["npx", "tsx"],
+        ".rb": ["ruby"],
+        ".pl": ["perl"],
+    }
+
+    def _run_script(self, step_index: int, name: str, script_path: str,
+                    args: str, command: str, env: dict | None,
+                    cwd: str | None = None) -> StepResult:
+        """Execute any script. Auto-detects runner by extension or uses custom command."""
+        # Build command
+        if command:
+            cmd = command.split() + [script_path]
         else:
-            return StepResult(
-                step_index=step.index,
-                success=False,
-                error=f"Unsupported script type: {script_name}",
-            )
+            ext = Path(name).suffix.lower()
+            runner = self._RUNNERS.get(ext)
+            if runner:
+                cmd = runner + [script_path]
+            else:
+                cmd = [script_path]  # direct execution
 
-    def _run_python_script(
-        self, step_index: int, script: str, context: dict[str, Any]
-    ) -> StepResult:
-        """Execute Python script in a subprocess."""
-        script_path = self._work_dir / f"step_{step_index}.py"
-        script_path.write_text(script, encoding="utf-8")
+        if args:
+            cmd.extend(args.split())
+
+        run_cwd = cwd or str(self._work_dir)
+        timeout = self._timeout_shell if Path(name).suffix.lower() in (".sh", ".bash") else self._timeout_python
+        logger.debug("Running: %s (cwd=%s, timeout=%ds)", " ".join(cmd), run_cwd, timeout)
 
         try:
-            result = subprocess.run(
-                ["python3", str(script_path)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                cwd=str(self._work_dir),
-            )
-            return StepResult(
-                step_index=step_index,
-                success=result.returncode == 0,
-                output=result.stdout,
-                error=result.stderr if result.returncode != 0 else "",
-            )
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=timeout, cwd=run_cwd, env=env)
+            return StepResult(step_index=step_index, success=proc.returncode == 0,
+                              output=proc.stdout, error=proc.stderr if proc.returncode != 0 else "")
         except subprocess.TimeoutExpired:
-            return StepResult(
-                step_index=step_index,
-                success=False,
-                error="Script execution timed out (120s)",
-            )
+            return StepResult(step_index=step_index, success=False,
+                              error=f"Script '{name}' timed out ({timeout}s)")
+        except FileNotFoundError:
+            return StepResult(step_index=step_index, success=False,
+                              error=f"Command not found: {cmd[0]}")
 
-    def _run_shell_script(
-        self, step_index: int, script: str, context: dict[str, Any]
-    ) -> StepResult:
-        """Execute shell script in a subprocess."""
+    # ------------------------------------------------------------------
+    # Action: invoke_skill (skill composition)
+    # ------------------------------------------------------------------
+
+    def _action_invoke_skill(self, step: SkillStep, skill: Skill,
+                             context: dict[str, Any], prev: dict[int, StepResult]) -> StepResult:
+        """Invoke another skill's workflow.
+
+        Params:
+            skill:  Name of the sub-skill to invoke.
+            input:  (optional) Input data to pass as context.
+        """
+        sub_skill_name = step.params.get("skill", "")
+        input_data = step.params.get("input", "")
+
+        if not self._skill_loader:
+            return StepResult(step_index=step.index, success=False,
+                              error="invoke_skill requires a SkillLoader. Pass skill_loader to SkillExecutor.")
+
+        # Load sub-skill
         try:
-            result = subprocess.run(
-                ["bash", "-c", script],
-                capture_output=True,
-                text=True,
-                timeout=60,
-                cwd=str(self._work_dir),
-            )
-            return StepResult(
-                step_index=step_index,
-                success=result.returncode == 0,
-                output=result.stdout,
-                error=result.stderr if result.returncode != 0 else "",
-            )
-        except subprocess.TimeoutExpired:
-            return StepResult(
-                step_index=step_index,
-                success=False,
-                error="Script execution timed out (60s)",
-            )
+            sub_skill = self._skill_loader.load_skill(sub_skill_name)
+        except (KeyError, Exception) as e:
+            return StepResult(step_index=step.index, success=False,
+                              error=f"Sub-skill '{sub_skill_name}' not found: {e}")
 
-    def _action_llm_reason(
-        self,
-        step: SkillStep,
-        skill: Skill,
-        context: dict[str, Any],
-        prev_results: dict[int, StepResult],
-    ) -> StepResult:
-        """Use LLM to reason about a workflow step."""
+        logger.info("[%s] invoke_skill: calling '%s' with %d chars input",
+                    skill.id, sub_skill_name, len(input_data))
+
+        # Execute sub-workflow
+        sub_ctx = dict(context)
+        if input_data:
+            sub_ctx["input_data"] = input_data
+        sub_ctx["parent_skill"] = skill.id
+
+        sub_result = self.execute_workflow(sub_skill, sub_ctx)
+
+        return StepResult(
+            step_index=step.index,
+            success=sub_result.success,
+            output=sub_result.final_output,
+            error=sub_result.error,
+            artifacts={
+                "sub_skill": sub_skill_name,
+                "sub_workflow_summary": sub_result.summary(),
+                "sub_step_count": sub_result.total_steps,
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Action: llm_reason (default)
+    # ------------------------------------------------------------------
+
+    def _action_llm_reason(self, step: SkillStep, skill: Skill,
+                           context: dict[str, Any], prev: dict[int, StepResult]) -> StepResult:
         if not self._llm_callback:
-            return StepResult(
-                step_index=step.index,
-                success=True,
-                output=f"[LLM reasoning needed] Step {step.index}: {step.description}",
-            )
+            return StepResult(step_index=step.index, success=True,
+                              output=f"[LLM reasoning needed] Step {step.index}: {step.description}")
 
-        # Build context from previous steps
         prev_context = ""
-        for idx, res in sorted(prev_results.items()):
+        for idx, res in sorted(prev.items()):
             if res.success and res.output:
-                prev_context += f"\n--- Step {idx} output ---\n{res.output}\n"
+                # Truncate long outputs to save tokens
+                out = res.output[:2000] + "..." if len(res.output) > 2000 else res.output
+                prev_context += f"\n--- Step {idx} output ---\n{out}\n"
 
         system_prompt = (
-            f"You are executing a skill workflow: {skill.metadata.name}\n"
-            f"Skill description: {skill.metadata.description}\n\n"
-            f"Full skill instructions:\n{skill.body}\n\n"
-            f"Previous step results:{prev_context}\n\n"
-            f"Additional context: {context}\n"
+            f"You are executing skill workflow: {skill.metadata.name}\n"
+            f"Description: {skill.metadata.description}\n\n"
+            f"Instructions:\n{skill.body}\n\n"
+            f"Previous outputs:{prev_context}\n"
+            f"Context: {context}\n"
         )
-
-        user_message = (
-            f"Execute step {step.index}: {step.description}\n"
-            f"Provide the output for this step."
-        )
+        user_message = f"Execute step {step.index}: {step.description}\nProvide the output."
 
         try:
             output = self._llm_callback(system_prompt, user_message)
-            return StepResult(
-                step_index=step.index,
-                success=True,
-                output=output,
-            )
+            return StepResult(step_index=step.index, success=True, output=output)
         except Exception as e:
-            return StepResult(
-                step_index=step.index,
-                success=False,
-                error=f"LLM call failed: {e}",
-            )
+            return StepResult(step_index=step.index, success=False, error=f"LLM call failed: {e}")

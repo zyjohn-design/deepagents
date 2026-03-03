@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from .models import (
     Skill,
@@ -72,6 +73,11 @@ class SkillLoader:
             for p in skill_paths:
                 self.add_skill_path(p)
 
+        logger.debug(
+            "SkillLoader initialized: %d dirs, %d path-skills",
+            len(self._skill_dirs), len(self._skills),
+        )
+
     # ------------------------------------------------------------------
     # Directory management
     # ------------------------------------------------------------------
@@ -91,9 +97,7 @@ class SkillLoader:
             logger.warning("Skill directory does not exist, skipping: %s", p)
             return
         if not p.is_dir():
-            logger.warning(
-                "Path is not a directory, use add_skill_path() instead: %s", p
-            )
+            logger.warning("Path is not a directory, use add_skill_path() instead: %s", p)
             return
         if p not in self._skill_dirs:
             self._skill_dirs.append(p)
@@ -153,9 +157,7 @@ class SkillLoader:
             if existing.path != skill_md:
                 logger.warning(
                     "Skill '%s' already registered from %s, overwriting with %s",
-                    skill.id,
-                    existing.path,
-                    skill_md,
+                    skill.id, existing.path, skill_md,
                 )
             else:
                 logger.debug("Skill '%s' already registered, skipping", skill.id)
@@ -215,6 +217,7 @@ class SkillLoader:
         """
         discovered = []
         for skill_dir in self._skill_dirs:
+            logger.debug("Scanning directory for SKILL.md: %s", skill_dir)
             for skill_md in skill_dir.rglob("SKILL.md"):
                 try:
                     skill = self._discover_one(skill_md)
@@ -225,6 +228,7 @@ class SkillLoader:
                 except Exception as e:
                     logger.warning("Failed to discover skill at %s: %s", skill_md, e)
 
+        logger.info("Discovery complete: found %d new skills (total: %d)", len(discovered), len(self._skills))
         return discovered
 
     def discover_and_load_all(self) -> list[Skill]:
@@ -378,18 +382,14 @@ class SkillLoader:
         ref_dir = skill_dir / "references"
         if ref_dir.is_dir():
             for f in ref_dir.rglob("*"):
-                if f.is_file() and f.suffix in (
-                    ".md",
-                    ".txt",
-                    ".json",
-                    ".yaml",
-                    ".yml",
-                ):
+                if f.is_file() and f.suffix in (".md", ".txt", ".json", ".yaml", ".yml"):
                     key = str(f.relative_to(ref_dir))
                     try:
                         refs[key] = f.read_text(encoding="utf-8")
+                        logger.debug("  Loaded reference: %s (%d chars)", key, len(refs[key]))
                     except Exception as e:
                         logger.warning("Failed to read reference %s: %s", f, e)
+        logger.debug("Loaded %d reference files from %s", len(refs), ref_dir)
         return refs
 
     def _load_scripts(self, skill_dir: Path) -> dict[str, str]:
@@ -402,8 +402,10 @@ class SkillLoader:
                     key = str(f.relative_to(script_dir))
                     try:
                         scripts[key] = f.read_text(encoding="utf-8")
+                        logger.debug("  Loaded script: %s (%d chars)", key, len(scripts[key]))
                     except Exception as e:
                         logger.warning("Failed to read script %s: %s", f, e)
+        logger.debug("Loaded %d script files from %s", len(scripts), script_dir)
         return scripts
 
     # ------------------------------------------------------------------

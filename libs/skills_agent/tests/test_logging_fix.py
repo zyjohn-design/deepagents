@@ -17,9 +17,9 @@ os.environ.pop("https_proxy", None)
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-from skills_agent_v2.config import Settings, LLMSettings
-from skills_agent_v2.graph import create_skills_agent
-from skills_agent_v2.llm import create_llm
+from skills_agent.config import Settings, LLMSettings
+from skills_agent.graph import create_skills_agent
+from skills_agent.llm import create_llm
 
 def test_logging():
     print(">>> Starting logging test")

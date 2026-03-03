@@ -1,0 +1,226 @@
+{
+  "event_name": "新意见征求稿附件跨年夜江北片区实施方案",
+  "event_type": "newyear",
+  "scenario_detected": "newyear",
+  "event_date": null,
+  "affected_areas": [
+    {
+      "area_name": "核心管控区",
+      "type": "管控区",
+      "phase": "启动准备阶段",
+      "start_time": "2026-12-31 15:00",
+      "end_time": "2026-12-31 17:00",
+      "boundaries": "沿江大道<民生路至一元路>、一元路<不含>、胜利街<一元路至黄石路，不含>、黄石路<不含>、中山大道<黄石路至民生路>、民生路<不含>合围区内道路",
+      "control_measures": "禁止机动车停放"
+    },
+    {
+      "area_name": "核心管控区",
+      "type": "管控区",
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 17:30",
+      "end_time": "2027-01-01 02:00",
+      "boundaries": "沿江大道<民生路至一元路>、一元路<不含>、胜利街<一元路至黄石路，不含>、黄石路<不含>、中山大道<黄石路至民生路>、民生路<不含>合围区内道路",
+      "control_measures": "只出不进，禁止机动车通行和停放，净空管理"
+    },
+    {
+      "area_name": "核心管控区",
+      "type": "管控区",
+      "phase": "疏散收尾阶段",
+      "start_time": "2027-01-01 02:00",
+      "end_time": "2027-01-01 03:00",
+      "boundaries": "沿江大道<民生路至一元路>、一元路<不含>、胜利街<一元路至黄石路，不含>、黄石路<不含>、中山大道<黄石路至民生路>、民生路<不含>合围区内道路",
+      "control_measures": "有序放行，恢复常态交通"
+    },
+    {
+      "area_name": "核心管控区",
+      "type": "管控区",
+      "phase": "全时段保障",
+      "start_time": "2026-12-31 15:00",
+      "end_time": "2027-01-01 03:00",
+      "boundaries": "沿江、沿河大道沿线及周边区域",
+      "control_measures": "消防备勤"
+    },
+    {
+      "area_name": "中端疏导区",
+      "type": "管控区",
+      "phase": "全时段保障",
+      "start_time": "2026-12-31 17:30",
+      "end_time": "2027-01-01 03:00",
+      "boundaries": "黄石路、胜利街<一元路至黄石路>、一元路、沿江大道、三阳路、京汉大道、友谊路、友谊南路、沿河大道、沿江大道、民生路、中山大道<民生路至黄石路，不含>合围区",
+      "control_measures": "【管控实施阶段】减量分流，单向循环，临时管控；【疏散收尾阶段】恢复通行，疏散保障"
+    },
+    {
+      "area_name": "远端分流区",
+      "type": "管控区",
+      "phase": "全时段保障",
+      "start_time": "2026-12-31 17:30",
+      "end_time": "2027-01-01 03:00",
+      "boundaries": "沿江大道、黄浦大街、解放大道、利济北路、武胜路、沿河大道、友谊南路、友谊路、京汉大道、三阳路、沿江大道合围区",
+      "control_measures": "【管控实施阶段】梯次分流，承压保畅；【疏散收尾阶段】恢复通行，干线交通疏堵保畅"
+    }
+  ],
+  "tasks": [
+    {
+      "phase": "启动准备阶段",
+      "start_time": "2026-12-31 15:00",
+      "end_time": "2026-12-31 17:00",
+      "control_type": "车辆禁停",
+      "description": "核心管控区禁止机动车停放",
+      "action": "禁止",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "全时段保障",
+      "start_time": "2026-12-31 15:00",
+      "end_time": "2027-01-01 03:00",
+      "control_type": "应急通道",
+      "description": "沿江大道 17 号码头至江滩 1 号门区域设置应急通道，确保抢险、应急、急救车辆及人员顺畅通行",
+      "action": "部署",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "全时段保障",
+      "start_time": "2026-12-31 15:00",
+      "end_time": "2027-01-01 03:00",
+      "control_type": "线路保障",
+      "description": "设置省、市及省厅、市局领导前往江汉关现场指挥部通行保障线路 4 条",
+      "action": "启动",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 17:00",
+      "end_time": "2027-01-01 03:00",
+      "control_type": "智能网联车禁行",
+      "description": "智能网联车类按指定区域设置临时禁行区",
+      "action": "禁止",
+      "affected_area": "远端分流区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 17:30",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "交通分流",
+      "description": "中端疏导区、远端分流区启动分流措施，减少向核心区行驶车流",
+      "action": "启动",
+      "affected_area": "中端疏导区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 17:30",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "交通分流",
+      "description": "远端分流区配合中端疏导区，分担过境交通流压力",
+      "action": "启动",
+      "affected_area": "远端分流区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 17:30",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "交通管控",
+      "description": "沿江、沿河大道出现人群、非机动车过度聚集时，立即采取临时交通管控措施，实施逐级分流、削流",
+      "action": "启动",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 17:30",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "交通疏导",
+      "description": "向周边中山大道、京汉大道等平行、外延道路分流车辆",
+      "action": "疏散",
+      "affected_area": "中端疏导区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 18:30",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "交通管控",
+      "description": "核心管控区禁止机动车通行和停放，配合治安力量完成核心区打围和车辆净空管理",
+      "action": "禁止",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 21:30",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "乐团转场",
+      "description": "琴台音乐厅乐团转场至江汉关，车队空车至沿江大道江汉关周边等候",
+      "action": "启动",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 22:00",
+      "end_time": "2026-12-31 23:30",
+      "control_type": "共享单车投放",
+      "description": "核心管控区周边投放共享单车，供散场群众使用",
+      "action": "部署",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 23:30",
+      "end_time": "2027-01-01 01:30",
+      "control_type": "网约车禁行",
+      "description": "网约车按指定区域设置临时禁行区",
+      "action": "禁止",
+      "affected_area": "中端疏导区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 23:45",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "临时管控",
+      "description": "京汉大道江汉路口周边启动临时交通管控措施，开展过境车辆交通分流和存留车辆清理",
+      "action": "封闭",
+      "affected_area": "中端疏导区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 23:45",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "单向通行",
+      "description": "黄陂街实施东向西单向通行管理措施",
+      "action": "部署",
+      "affected_area": "中端疏导区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2026-12-31 23:45",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "出租车接驳",
+      "description": "巡游出租车在沿江大道一元路至三阳路段有序排队加入疏散运输保障",
+      "action": "部署",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "管控实施阶段",
+      "start_time": "2027-01-01 00:00",
+      "end_time": "2027-01-01 02:00",
+      "control_type": "疏散保障",
+      "description": "核心区、疏导区、外围区同步实施聚集人群疏散和外运保障",
+      "action": "疏散",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "疏散收尾阶段",
+      "start_time": "2027-01-01 02:00",
+      "end_time": "2027-01-01 03:00",
+      "control_type": "恢复通行",
+      "description": "核心区内允许有组织的疏散车辆按指定通道进入缓冲区指定区段，场内车辆驶离核心区",
+      "action": "恢复",
+      "affected_area": "核心管控区"
+    },
+    {
+      "phase": "疏散收尾阶段",
+      "start_time": "2027-01-01 03:00",
+      "end_time": "2027-01-01 03:00",
+      "control_type": "恢复通行",
+      "description": "中山大道、京汉大道车辆放行",
+      "action": "恢复",
+      "affected_area": "中端疏导区"
+    }
+  ]
+}

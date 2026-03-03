@@ -37,6 +37,26 @@ import instructor
 from openai import OpenAI
 from pydantic import BaseModel, Field, create_model
 
+import logging
+import sys
+
+def _setup_script_logger(name: str = "skills_agent.script") -> logging.Logger:
+    """创建输出到 stderr 的 logger，格式与框架一致。"""
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+            datefmt="%H:%M:%S",
+        ))
+        logger.addHandler(handler)
+    # 从环境变量读取日志级别，默认 INFO
+    level = os.getenv("SKILLS_AGENT_LOG_LEVEL", "INFO").upper()
+    logger.setLevel(getattr(logging, level, logging.INFO))
+    return logger
+
+logger = _setup_script_logger("skills.event_doc_parser")
+
 # 移除项目配置依赖，改为从环境变量获取
 class Settings:
     """Simple settings class to replace src.config.settings"""
@@ -329,15 +349,15 @@ class EventDocExtractor:
 
         # --- Fallbacks ---
         if not phases:
-            print("Warning: No phases found in knowledge base, using defaults.")
+            logger.warning("Warning: No phases found in knowledge base, using defaults.")
             phases = ["启动准备阶段", "管控实施阶段", "疏散收尾阶段", "全时段保障"]
 
         if not area_names:
-            print(f"Info: 知识库无 area_name 枚举（场景 {self.scene_type}），area_name 将允许自由填写。")
+            logger.info(f"Info: 知识库无 area_name 枚举（场景 {self.scene_type}），area_name 将允许自由填写。")
             # area_names 保持为空列表，_init_dynamic_models 会处理 fallback
 
         if not area_types:
-            print("Warning: No area types found in knowledge base.")
+            logger.warning("Warning: No area types found in knowledge base.")
 
         return phases, area_names, list(area_types)
 
@@ -363,12 +383,12 @@ class EventDocExtractor:
         self.has_strict_area_names = bool(self.area_names_enum)
 
         # 打印枚举约束，方便调试
-        print(f"[枚举约束] phase: {self.phases_enum}")
+        logger.info(f"[枚举约束] phase: {self.phases_enum}")
         if self.has_strict_area_names:
-            print(f"[枚举约束] area_name (严格): {self.area_names_enum}")
+            logger.info(f"[枚举约束] area_name (严格): {self.area_names_enum}")
         else:
-            print(f"[枚举约束] area_name: 自由填写（知识库无枚举）")
-        print(f"[枚举约束] area_type (严格): {self.area_types_enum}")
+            logger.info(f"[枚举约束] area_name: 自由填写（知识库无枚举）")
+        logger.info(f"[枚举约束] area_type (严格): {self.area_types_enum}")
 
         # --- Phase 2: 区域提取模型 ---
         self.DynAreaItem = create_model(
@@ -530,7 +550,7 @@ class EventDocExtractor:
             )
             return result
         except Exception as e:
-            print(f"Phase 1 结构识别失败: {e}")
+            logger.error(f"Phase 1 结构识别失败: {e}")
             # Fallback: 假设包含所有阶段
             return PhaseDetectionOutput(
                 phases_detected=[
@@ -611,7 +631,7 @@ class EventDocExtractor:
         last_context_time = None
 
         for i, chunk in enumerate(chunks):
-            print(f"  chunk {i+1}/{len(chunks)} ({len(chunk)} chars)...", end=" ", flush=True)
+            logger.info(f"  chunk {i+1}/{len(chunks)} ({len(chunk)} chars)...")
 
             current_prompt = base_system_prompt
             if last_context_time:
@@ -676,10 +696,10 @@ class EventDocExtractor:
                         if re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", task_dict['start_time']):
                             last_context_time = task_dict['start_time']
 
-                print(f"→ {n_areas} 区域, {n_tasks} 任务", flush=True)
+                logger.info(f"→ {n_areas} 区域, {n_tasks} 任务")
 
             except Exception as e:
-                print(f"失败: {e}", flush=True)
+                logger.error(f"失败: {e}")
                 continue
 
         # 排序
@@ -688,7 +708,7 @@ class EventDocExtractor:
         except Exception:
             pass
 
-        print(f"  完成 — {len(all_areas)} 区域, {len(all_tasks)} 任务")
+        logger.info(f"  完成 — {len(all_areas)} 区域, {len(all_tasks)} 任务")
         return all_areas, all_tasks
 
     # ------------------------------------------------------------------
@@ -734,15 +754,15 @@ class EventDocExtractor:
             if self._boundaries_are_similar(group):
                 merged = self._do_merge(group, continuous_phase)
                 result.append(merged)
-                print(f"  ✓ 合并: {area_name} ({len(group)}个阶段 → 全时段保障)")
+                logger.info(f"  ✓ 合并: {area_name} ({len(group)}个阶段 → 全时段保障)")
                 for area in group:
                     if area['phase'] != continuous_phase:
-                        print(f"    - {area['phase']}: {area['control_measures']}")
+                        logger.info(f"    - {area['phase']}: {area['control_measures']}")
             else:
                 result.extend(group)
-                print(f"  ○ 保留分条: {area_name} (boundaries 在不同阶段有实质变化)")
+                logger.info(f"  ○ 保留分条: {area_name} (boundaries 在不同阶段有实质变化)")
 
-        print(f"  合并前: {len(areas)} 条 → 合并后: {len(result)} 条")
+        logger.info(f"  合并前: {len(areas)} 条 → 合并后: {len(result)} 条")
         return result
 
     @staticmethod
@@ -908,29 +928,29 @@ class EventDocExtractor:
 
     def extract(self, text: str) -> dict:
         """两阶段提取主流程：Phase 1 结构识别 → Phase 2 统一提取（区域+任务）"""
-        print("=" * 60)
-        print("Phase 1: 文档结构识别")
-        print("=" * 60)
+        logger.info("=" * 60)
+        logger.info("Phase 1: 文档结构识别")
+        logger.info("=" * 60)
         structure = self.phase1_detect_structure(text)
 
-        print(f"\n全局时间上下文: {structure.global_time_context}")
+        logger.info(f"\n全局时间上下文: {structure.global_time_context}")
         for p in structure.phases_detected:
-            print(f"  ✓ {p.phase_name}: {p.time_range_description} — {p.section_summary}")
+            logger.info(f"  ✓ {p.phase_name}: {p.time_range_description} — {p.section_summary}")
 
         # 智能分块（增大 chunk size 减少调用次数）
-        print("\n--- 文档分块 ---")
+        logger.info("\n--- 文档分块 ---")
         sections = parse_document_structure(text)
-        print(f"识别到 {len(sections)} 个语义段落")
+        logger.info(f"识别到 {len(sections)} 个语义段落")
         chunks = merge_sections_to_chunks(sections, max_chunk_chars=6000)
-        print(f"合并为 {len(chunks)} 个处理块")
+        logger.info(f"合并为 {len(chunks)} 个处理块")
 
-        print("\n" + "=" * 60)
-        print("Phase 2: 统一提取（区域 + 任务）")
-        print("=" * 60)
+        logger.info("\n" + "=" * 60)
+        logger.info("Phase 2: 统一提取（区域 + 任务）")
+        logger.info("=" * 60)
         areas_raw, tasks = self.phase2_unified_extract(chunks, structure)
 
         # 后处理：合并 boundaries 不变的同名区域到 "全时段保障"
-        print("\n--- 区域合并优化 ---")
+        logger.info("\n--- 区域合并优化 ---")
         areas = self._merge_constant_boundary_areas(areas_raw)
 
         # 组装最终结果
@@ -962,10 +982,10 @@ class MinerUClient:
     def convert_to_markdown(self, file_path: Path) -> str:
         if not file_path.exists():
             raise FileNotFoundError(f"文件未找到: {file_path}")
-        print(f"正在调用 MinerU 转换文件: {file_path.name} ...")
+        logger.info(f"正在调用 MinerU 转换文件: {file_path.name} ...")
 
         if "mineru-service" in self.api_url:
-            print("警告: 未配置有效的 MinerU URL，使用模拟转换。")
+            logger.warning("警告: 未配置有效的 MinerU URL，使用模拟转换。")
             return f"# {file_path.stem}\n\n(模拟转换内容)\n"
 
         try:
@@ -996,12 +1016,12 @@ def main():
     event_date = args.event_date
     scene_type = args.scene_type
 
-    print(f"输入文件: {input_file}")
-    print(f"场景类型: {scene_type}")
-    print(f"活动日期: {event_date}")
+    logger.info(f"输入文件: {input_file}")
+    logger.info(f"场景类型: {scene_type}")
+    logger.info(f"活动日期: {event_date}")
 
     if not input_file.exists():
-        print(f"错误: 文件 {input_file} 不存在")
+        logger.error(f"错误: 文件 {input_file} 不存在")
         sys.exit(1)
 
     if hasattr(sys.stdout, 'reconfigure'):
@@ -1009,34 +1029,34 @@ def main():
 
     # 1. 文档转换
     if input_file.suffix.lower() in ['.pdf', '.docx', '.doc']:
-        print("检测到二进制文档，启动 MinerU 转换...")
+        logger.info("检测到二进制文档，启动 MinerU 转换...")
         converter = MinerUClient()
         try:
             text = converter.convert_to_markdown(input_file)
         except Exception as e:
-            print(f"转换失败: {e}")
+            logger.error(f"转换失败: {e}")
             sys.exit(1)
     else:
         text = input_file.read_text(encoding="utf-8")
 
-    print(f"文档长度: {len(text)} 字符")
+    logger.info(f"文档长度: {len(text)} 字符")
 
     # 智能参数解析
     date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
     if scene_type and date_pattern.match(scene_type):
         if not event_date:
-            print(f"提示: '{scene_type}' 被识别为日期，自动交换参数")
+            logger.info(f"提示: '{scene_type}' 被识别为日期，自动交换参数")
             event_date = scene_type
             scene_type = None
 
     if not scene_type:
-        print("警告: 未提供 scene_type，默认使用 'other'")
+        logger.warning("警告: 未提供 scene_type，默认使用 'other'")
         scene_type = "other"
 
     # 2. 三阶段提取
     extractor = EventDocExtractor(scene_type, event_date)
-    print(f"\n开始三阶段提取 (模型: {extractor.model_name})")
-    print("=" * 60)
+    logger.info(f"开始三阶段提取 (模型: {extractor.model_name})")
+    logger.info("=" * 60)
 
     result = extractor.extract(text)
     result["event_name"] = input_file.stem
@@ -1054,11 +1074,13 @@ def main():
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
 
-    print(f"\n{'=' * 60}")
-    print(f"提取完成！")
-    print(f"  区域: {len(result['affected_areas'])} 条（含分阶段记录）")
-    print(f"  任务: {len(result['tasks'])} 条")
-    print(f"  输出: {output_file}")
+    logger.info(f"\n{'=' * 60}")
+    logger.info(f"提取完成！")
+    logger.info(f"  区域: {len(result['affected_areas'])} 条（含分阶段记录）")
+    logger.info(f"  任务: {len(result['tasks'])} 条")
+    logger.info(f"  输出: {output_file}")
+    # 大模型使用的输出日志
+    print(f"任务完成，输出: {output_file}")
 
 
 if __name__ == "__main__":

@@ -18,11 +18,11 @@ os.environ.pop("https_proxy", None)
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-from skills_agent_v2.config import Settings, LLMSettings, LogSettings
-from skills_agent_v2.loader import SkillLoader
-from skills_agent_v2.executor import SkillExecutor
-from skills_agent_v2.graph import create_skills_agent
-from skills_agent_v2.state import StateManager
+from skills_agent.config import Settings, LLMSettings, LogSettings
+from skills_agent.loader import SkillLoader
+from skills_agent.executor import SkillExecutor
+from skills_agent.graph import create_skills_agent
+from skills_agent.state import StateManager
 
 def test_event_doc_parser_skill():
     # 1. 配置 LLM 设置
@@ -69,7 +69,7 @@ def test_event_doc_parser_skill():
         return
 
     # 3. 创建 LLM (用于测试连通性和传入 Agent)
-    from skills_agent_v2.llm import create_llm
+    from skills_agent.llm import create_llm
     llm = create_llm(settings.llm)
 
     # 尝试直接调用 llm 验证连通性
