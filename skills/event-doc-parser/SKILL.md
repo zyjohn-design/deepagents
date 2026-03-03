@@ -1,7 +1,7 @@
 ---
 name: event-doc-parser
 description: 解析大型活动文档(跨年夜、马拉松等),提取场景信息、阶段划分、时间段任务、管控区域和路线。输出统一JSON格式。
-version: 2.2.0
+version: 2.3.0
 tags: [交通管控, 活动解析, 文档提取, event, traffic]
 inputs: [活动文档路径(PDF/DOCX/Markdown)]
 outputs: [结构化JSON文件路径]
@@ -16,6 +16,16 @@ depends_on_skills: []
 
 典型输入：跨年夜方案、马拉松交通管控方案、大型演出安保方案等。
 典型输出：包含时间线、管控区域、保障路线、任务列表的 JSON 文件。
+
+## 文件命名规范
+
+所有文件路径**不得包含空格**，使用下划线或连字符替代。
+正确: `2026_跨年夜_江北片区实施方案.md`
+错误: `2026 跨年夜 江北片区实施方案.md`
+
+## ⚠️ 路径传递规则
+
+**文件路径必须原样复制，严禁做任何修改**。不得在中文与数字之间插入空格、不得修改大小写、不得增删任何字符。用户给的路径是什么就传什么。
 
 ## 核心工作流
 
@@ -50,7 +60,7 @@ depends_on_skills: []
 skill_name: "event-doc-parser"
 script_name: "doc_converter.py"
 command: "uv run python"
-args: "/absolute/path/to/input.pdf"
+script_args: "/absolute/path/to/input.pdf"
 ```
 
 记录输出的 Markdown 文件路径，后续步骤使用。
@@ -74,11 +84,11 @@ reference_name: "scene_enumeration.md"
 skill_name: "event-doc-parser"
 script_name: "event_doc_parser.py"
 command: "uv run python"
-args: "<md_file> <scene_type> [event_date]"
+script_args: "<md_file> <scene_type> [event_date]"
 ```
 
 参数说明：
-- `md_file` — Markdown 文件**绝对路径**（步骤2输出，或原始 .md 路径）
+- `md_file` — Markdown 文件绝对路径（步骤2输出，或原始 .md 路径）
 - `scene_type` — 步骤3确定的场景类型
 - `event_date`（可选）— 活动日期，YYYY-MM-DD 格式
 
@@ -87,7 +97,7 @@ args: "<md_file> <scene_type> [event_date]"
 skill_name: "event-doc-parser"
 script_name: "event_doc_parser.py"
 command: "uv run python"
-args: "/data/docs/2026_newyear.md new_year_eve 2026-12-31"
+script_args: "/data/docs/2026_跨年夜_江北片区实施方案.md <步骤3确定的scene_type> 2026-12-31"
 ```
 
 ### 步骤5: 返回结果
@@ -99,7 +109,7 @@ args: "/data/docs/2026_newyear.md new_year_eve 2026-12-31"
 1. **严禁 LLM 直接提取** — 必须使用 event_doc_parser.py 脚本，禁止通过 Prompt 让 LLM 直接解析全文生成 JSON
 2. **参数准确性** — scene_type 必须来自 scene_enumeration.md 的精确匹配，不得猜测
 3. **日期格式** — 必须为 YYYY-MM-DD
-4. **路径规范** — 使用绝对路径或项目根目录的相对路径
+4. **路径规范** — 使用绝对路径，文件名不得含空格
 
 ## 决策速查表
 
