@@ -4,22 +4,34 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage
+
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
     from langgraph.runtime import Runtime
 
 from deepagents_cli.agent import (
+    DEFAULT_AGENT_NAME,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
-    _format_shell_description,
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    create_cli_agent,
     get_system_prompt,
+    list_agents,
 )
-from deepagents_cli.config import get_glyphs
+from deepagents_cli.config import Settings, get_glyphs
+
+
+def _make_fake_chat_model() -> GenericFakeChatModel:
+    """Create a fake chat model compatible with summarization middleware."""
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+    model.profile = {"max_input_tokens": 200000}
+    return model
 
 
 def test_format_write_file_description_create_new_file(tmp_path: Path) -> None:
@@ -262,27 +274,6 @@ def test_format_task_description_truncates_long_description():
     assert len(description) < len(long_description) + 300
 
 
-def test_format_shell_description():
-    """Test shell command description formatting."""
-    tool_call = cast(
-        "ToolCall",
-        {
-            "name": "shell",
-            "args": {
-                "command": "ls -la /tmp",
-            },
-            "id": "call-11",
-        },
-    )
-
-    description = _format_shell_description(
-        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
-    )
-
-    assert "Shell Command: ls -la /tmp" in description
-    assert "Working Directory:" in description
-
-
 def test_format_execute_description():
     """Test execute command description formatting."""
     tool_call = cast(
@@ -301,7 +292,59 @@ def test_format_execute_description():
     )
 
     assert "Execute Command: python script.py" in description
-    assert "Location: Remote Sandbox" in description
+    assert "Working Directory:" in description
+
+
+def test_format_execute_description_with_hidden_unicode():
+    """Hidden Unicode in command should trigger warning and marker display."""
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "execute",
+            "args": {"command": "echo a\u202eb"},
+            "id": "call-13",
+        },
+    )
+    description = _format_execute_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    assert "Execute Command: echo ab" in description
+    assert "Hidden Unicode detected" in description
+    assert "U+202E" in description
+    assert "Raw:" in description
+
+
+def test_format_fetch_url_description_with_suspicious_url():
+    """Suspicious URL should trigger warning lines in fetch_url description."""
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "fetch_url",
+            "args": {"url": "https://аpple.com"},
+            "id": "call-14",
+        },
+    )
+    description = _format_fetch_url_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    assert "URL warning" in description
+
+
+def test_format_fetch_url_description_with_hidden_unicode_in_url():
+    """Hidden Unicode in URL should be stripped from display."""
+    tool_call = cast(
+        "ToolCall",
+        {
+            "name": "fetch_url",
+            "args": {"url": "https://exa\u200bmple.com"},
+            "id": "call-15",
+        },
+    )
+    description = _format_fetch_url_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+    assert "URL: https://example.com" in description
+    assert "\u200b" not in description
 
 
 class TestGetSystemPromptModelIdentity:
@@ -310,7 +353,7 @@ class TestGetSystemPromptModelIdentity:
     def test_includes_model_identity_when_all_settings_present(self) -> None:
         """Test that model identity section is included when all settings are set."""
         mock_settings = Mock()
-        mock_settings.model_name = "claude-sonnet-4-5-20250929"
+        mock_settings.model_name = "claude-sonnet-4-6"
         mock_settings.model_provider = "anthropic"
         mock_settings.model_context_limit = 200000
 
@@ -318,7 +361,7 @@ class TestGetSystemPromptModelIdentity:
             prompt = get_system_prompt("test-agent")
 
         assert "### Model Identity" in prompt
-        assert "claude-sonnet-4-5-20250929" in prompt
+        assert "claude-sonnet-4-6" in prompt
         assert "(provider: anthropic)" in prompt
         assert "Your context window is 200,000 tokens." in prompt
 
@@ -378,3 +421,592 @@ class TestGetSystemPromptModelIdentity:
         assert "You are running as model `test-model`." in prompt
         assert "(provider:" not in prompt
         assert "context window" not in prompt
+
+
+class TestGetSystemPromptNonInteractive:
+    """Tests for interactive vs non-interactive system prompt."""
+
+    def test_interactive_prompt_mentions_interactive_cli(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=True)
+
+        assert "interactive CLI" in prompt
+        assert "ask questions before acting" in prompt
+
+    def test_non_interactive_prompt_mentions_headless(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "non-interactive" in prompt
+        assert "no human" in prompt.lower()
+
+    def test_non_interactive_prompt_does_not_ask_questions(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "ask questions before acting" not in prompt
+
+    def test_non_interactive_prompt_instructs_autonomous_execution(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "Do NOT ask clarifying questions" in prompt
+        assert "reasonable assumptions" in prompt
+
+    def test_non_interactive_prompt_requires_non_interactive_commands(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "non-interactive command variants" in prompt
+        assert "npm init -y" in prompt
+
+    def test_default_is_interactive(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "interactive CLI" in prompt
+
+
+class TestGetSystemPromptCwdOSError:
+    """Tests for Path.cwd() OSError handling in get_system_prompt."""
+
+    def test_falls_back_on_cwd_oserror(self) -> None:
+        """get_system_prompt should not crash when Path.cwd() raises OSError."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.Path.cwd", side_effect=OSError("deleted")),
+        ):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Current Working Directory" in prompt
+
+
+class TestGetSystemPromptPlaceholderValidation:
+    """Tests for unreplaced placeholder detection."""
+
+    def test_no_unreplaced_placeholders_in_interactive(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=True)
+
+        # No raw {placeholder} patterns should remain
+        import re
+
+        assert not re.findall(r"\{[a-z_]+\}", prompt)
+
+    def test_no_unreplaced_placeholders_in_non_interactive(self) -> None:
+        mock_settings = Mock()
+        mock_settings.model_name = None
+
+        with patch("deepagents_cli.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        import re
+
+        assert not re.findall(r"\{[a-z_]+\}", prompt)
+
+
+class TestCreateCliAgentInteractiveForwarding:
+    """Tests for interactive parameter forwarding in create_cli_agent."""
+
+    def test_forwards_interactive_false_to_get_system_prompt(
+        self, tmp_path: Path
+    ) -> None:
+        """create_cli_agent should forward interactive=False to get_system_prompt."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
+            patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
+        ):
+            mock_get_prompt.return_value = "mocked prompt"
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                interactive=False,
+            )
+
+        mock_get_prompt.assert_called_once()
+        _, kwargs = mock_get_prompt.call_args
+        assert kwargs["interactive"] is False
+
+    def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
+        """Explicit system_prompt should be used verbatim, ignoring interactive."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
+            patch("deepagents_cli.agent.get_system_prompt") as mock_get_prompt,
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                system_prompt="custom prompt",
+                interactive=False,
+            )
+
+        # get_system_prompt should NOT be called when system_prompt is provided
+        mock_get_prompt.assert_not_called()
+
+
+class TestDefaultAgentName:
+    """Tests for the DEFAULT_AGENT_NAME constant."""
+
+    def test_default_agent_name_value(self) -> None:
+        """Guard against accidental renames of the default agent identifier.
+
+        Other modules (main.py, commands.py) rely on this value matching
+        the directory name under `~/.deepagents/`.
+        """
+        assert DEFAULT_AGENT_NAME == "agent"
+
+
+class TestListAgents:
+    """Tests for list_agents output."""
+
+    def test_default_agent_marked(self, tmp_path: Path) -> None:
+        """Test that the default agent is labeled as (default) in list output."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        # Create the default agent directory with AGENTS.md
+        default_dir = agents_dir / DEFAULT_AGENT_NAME
+        default_dir.mkdir()
+        (default_dir / "AGENTS.md").touch()
+
+        # Create a non-default agent
+        other_dir = agents_dir / "researcher"
+        other_dir.mkdir()
+        (other_dir / "AGENTS.md").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        output: list[str] = []
+
+        def capture_print(*args: Any, **_: Any) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            list_agents()
+
+        joined = "\n".join(output)
+        assert "(default)" in joined
+        # Only the default agent should be marked
+        assert joined.count("(default)") == 1
+        # The default agent name should appear with the (default) label
+        assert DEFAULT_AGENT_NAME in joined
+        # The other agent should NOT be marked as default
+        for line in output:
+            if "researcher" in line and "(default)" in line:
+                msg = "Non-default agent should not be marked as (default)"
+                raise AssertionError(msg)
+
+    def test_non_default_agent_not_marked(self, tmp_path: Path) -> None:
+        """Test that non-default agents are not labeled as (default)."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+
+        # Only create a non-default agent
+        custom_dir = agents_dir / "researcher"
+        custom_dir.mkdir()
+        (custom_dir / "AGENTS.md").touch()
+
+        mock_settings = Mock()
+        mock_settings.user_deepagents_dir = agents_dir
+
+        output: list[str] = []
+
+        def capture_print(*args: Any, **_: Any) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            list_agents()
+
+        joined = "\n".join(output)
+        assert "(default)" not in joined
+
+
+class TestCreateCliAgentSkillsSources:
+    """Test that `create_cli_agent` wires skills sources in precedence order."""
+
+    def test_skills_source_precedence_order(self, tmp_path: Path) -> None:
+        """Skills sources should be wired from lowest to highest precedence.
+
+        SkillsMiddleware uses last-one-wins dedup, so source order matters.
+        """
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        user_agent_skills_dir = tmp_path / "user-agent-skills"
+        user_agent_skills_dir.mkdir()
+        project_skills_dir = tmp_path / "project-skills"
+        project_skills_dir.mkdir()
+        project_agent_skills_dir = tmp_path / "project-agent-skills"
+        project_agent_skills_dir.mkdir()
+        built_in_dir = Settings.get_built_in_skills_dir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
+        mock_settings.get_project_skills_dir.return_value = project_skills_dir
+        mock_settings.get_project_agent_skills_dir.return_value = (
+            project_agent_skills_dir
+        )
+        mock_settings.get_built_in_skills_dir.return_value = built_in_dir
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        # Needed by get_system_prompt() which formats model identity
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured_sources: list[list[str]] = []
+
+        class FakeSkillsMiddleware:
+            """Capture the sources arg passed to SkillsMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured_sources.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware", FakeSkillsMiddleware),
+            patch("deepagents_cli.agent.MemoryMiddleware"),
+            patch("deepagents_cli.agent.create_deep_agent", return_value=mock_agent),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=True,
+                enable_shell=False,
+            )
+
+        assert len(captured_sources) == 1
+        sources = captured_sources[0]
+        assert sources == [
+            str(built_in_dir),
+            str(skills_dir),
+            str(user_agent_skills_dir),
+            str(project_skills_dir),
+            str(project_agent_skills_dir),
+        ]
+
+
+class TestCreateCliAgentMemorySources:
+    """Test that `create_cli_agent` wires project AGENTS.md into memory sources."""
+
+    def test_project_agent_md_paths_in_memory_sources(self, tmp_path: Path) -> None:
+        """Project AGENTS.md paths should be passed to MemoryMiddleware sources."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        project_inner = tmp_path / ".deepagents" / "AGENTS.md"
+        project_root = tmp_path / "AGENTS.md"
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = [
+            project_inner,
+            project_root,
+        ]
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = tmp_path
+
+        captured: list[list[str]] = []
+
+        class FakeMemoryMiddleware:
+            """Capture the sources arg passed to MemoryMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware", FakeMemoryMiddleware),
+            patch("deepagents_cli.agent.FilesystemBackend"),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        assert len(captured) == 1
+        sources = captured[0]
+        # User AGENTS.md is always first
+        assert sources[0] == str(agent_dir / "AGENTS.md")
+        # Both project paths follow
+        assert sources[1] == str(project_inner)
+        assert sources[2] == str(project_root)
+        assert len(sources) == 3
+
+    def test_empty_project_paths_no_extra_sources(self, tmp_path: Path) -> None:
+        """Empty project path list should not add extra memory sources."""
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured: list[list[str]] = []
+
+        class FakeMemoryMiddleware:
+            """Capture the sources arg passed to MemoryMiddleware."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.append(kwargs.get("sources", []))
+
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch("deepagents_cli.agent.SkillsMiddleware"),
+            patch("deepagents_cli.agent.MemoryMiddleware", FakeMemoryMiddleware),
+            patch("deepagents_cli.agent.FilesystemBackend"),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        assert len(captured) == 1
+        sources = captured[0]
+        # Only user AGENTS.md, no project paths
+        assert sources == [str(agent_dir / "AGENTS.md")]
+
+
+class TestMiddlewareStackConformance:
+    """Verify all middleware passed to create_deep_agent inherits AgentMiddleware."""
+
+    def test_all_middleware_inherit_agent_middleware(self, tmp_path: Path) -> None:
+        """Every middleware in the stack must be an AgentMiddleware subclass.
+
+        This prevents runtime errors like 'has no attribute wrap_tool_call'
+        when the agent framework iterates over the middleware list.
+        """
+        from langchain.agents.middleware.types import AgentMiddleware
+
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir()
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured_middleware: list[list[Any]] = []
+
+        def capture_create_agent(**kwargs: Any) -> Mock:
+            captured_middleware.append(kwargs.get("middleware", []))
+            agent = Mock()
+            agent.with_config.return_value = agent
+            return agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_cli.agent.settings", mock_settings),
+            patch(
+                "deepagents_cli.agent.create_deep_agent",
+                side_effect=capture_create_agent,
+            ),
+            patch(
+                "deepagents.graph.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=True,
+                enable_skills=True,
+                enable_shell=False,
+            )
+
+        assert len(captured_middleware) == 1
+        middleware_list = captured_middleware[0]
+        assert len(middleware_list) > 0, "Expected at least one middleware"
+
+        for mw in middleware_list:
+            assert isinstance(mw, AgentMiddleware), (
+                f"{type(mw).__name__} does not inherit from AgentMiddleware"
+            )
