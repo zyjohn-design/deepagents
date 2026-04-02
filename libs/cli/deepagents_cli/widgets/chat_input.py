@@ -23,7 +23,6 @@ from deepagents_cli.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
     PREFIX_TO_MODE,
-    get_glyphs,
     is_ascii_mode,
 )
 from deepagents_cli.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
@@ -136,19 +135,15 @@ class CompletionOption(Static):
 
     def _update_display(self) -> None:
         """Update the display text and styling."""
-        glyphs = get_glyphs()
-        cursor = f"{glyphs.cursor} " if self._is_selected else "  "
-
+        display_label = self._label.removeprefix("/")
         if self._description:
             content = Content.from_markup(
-                f"{cursor}[bold]$label[/bold]  [dim]$desc[/dim]",
-                label=self._label,
+                "[bold]$label[/bold]  [dim]$desc[/dim]",
+                label=display_label,
                 desc=self._description,
             )
         else:
-            content = Content.from_markup(
-                f"{cursor}[bold]$label[/bold]", label=self._label
-            )
+            content = Content.from_markup("[bold]$label[/bold]", label=display_label)
 
         self.update(content)
 
@@ -408,7 +403,6 @@ class ChatTextArea(TextArea):
         self._skip_history_change_events = 0
         self._in_history = False
         self._completion_active = False
-        self._app_has_focus = True
         # Buffer quote-prefixed high-frequency key bursts from terminals that
         # emulate paste via rapid key events instead of dispatching a paste
         # event.
@@ -421,12 +415,10 @@ class ChatTextArea(TextArea):
     def set_app_focus(self, *, has_focus: bool) -> None:
         """Set whether the app should show the cursor as active.
 
-        When has_focus=False (e.g., agent is running), disables cursor blink
-        so the cursor doesn't flash while waiting for a response.
+        Args:
+            has_focus: Whether the app input should be focused.
         """
-        self._app_has_focus = has_focus
         self._backslash_pending_time = None
-        self.cursor_blink = has_focus
         if has_focus and not self.has_focus:
             self.call_after_refresh(self.focus)
 
@@ -1058,7 +1050,12 @@ class ChatInput(Vertical):
                 if self.mode != detected:
                     self.mode = detected
                 self._strip_mode_prefix()
-                return
+                # Fall through to update completion suggestions in the same
+                # refresh cycle as the mode/glyph change rather than waiting
+                # for the next text-change event caused by the prefix strip.
+                # Note: the strip's text-change event will also call
+                # on_text_changed (idempotently) since _stripping_prefix only
+                # skips mode detection, not the completion block below.
         # Update completion suggestions using completion-space text/cursor.
         if self._completion_manager and self._text_area:
             if is_path_payload:
@@ -1156,10 +1153,10 @@ class ChatInput(Vertical):
     @staticmethod
     def _is_existing_path_payload(text: str) -> bool:
         """Return whether text is a dropped-path payload for existing files."""
-        from deepagents_cli.input import parse_pasted_path_payload
-
         if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
             return False
+        from deepagents_cli.input import parse_pasted_path_payload
+
         return parse_pasted_path_payload(text, allow_leading_path=True) is not None
 
     def _is_dropped_path_payload(self, text: str) -> bool:
@@ -1576,7 +1573,13 @@ class ChatInput(Vertical):
             and self.mode != "normal"
             and self._get_cursor_offset() == 0
         ):
-            self._completion_manager.reset()
+            # Defer the popup reset so it coalesces with the glyph update
+            # that watch_mode schedules via call_after_refresh.
+            def _deferred_reset() -> None:
+                if self._completion_manager is not None:
+                    self._completion_manager.reset()
+
+            self.call_after_refresh(_deferred_reset)
             self.mode = "normal"
             event.prevent_default()
             event.stop()
@@ -1624,25 +1627,31 @@ class ChatInput(Vertical):
         return offset + min(col, len(lines[row]))
 
     def watch_mode(self, mode: str) -> None:
-        """Post mode changed message and update prompt indicator."""
-        try:
-            prompt = self.query_one("#prompt", Static)
-        except NoMatches:
-            logger.warning("watch_mode: #prompt widget not found")
-            self.post_message(self.ModeChanged(mode))
-            return
-        self.remove_class("mode-shell", "mode-command")
+        """Post mode changed message and update prompt indicator.
+
+        The prompt glyph update is deferred via `call_after_refresh` so that
+        callers which also schedule deferred work (e.g. the completion popup)
+        can coalesce both visual changes into a single refresh.
+        """
         glyph = MODE_DISPLAY_GLYPHS.get(mode)
-        if glyph:
-            prompt.update(glyph)
-            self.add_class(f"mode-{mode}")
-        else:
-            if mode != "normal":
-                logger.warning(
-                    "No display glyph for mode %r; falling back to '>'",
-                    mode,
-                )
-            prompt.update(">")
+        if not glyph and mode != "normal":
+            logger.warning(
+                "No display glyph for mode %r; falling back to '>'",
+                mode,
+            )
+
+        def _apply() -> None:
+            self.remove_class("mode-shell", "mode-command")
+            if glyph:
+                self.add_class(f"mode-{mode}")
+            try:
+                prompt = self.query_one("#prompt", Static)
+            except NoMatches:
+                logger.warning("watch_mode._apply: #prompt widget not found")
+                return
+            prompt.update(glyph or ">")
+
+        self.call_after_refresh(_apply)
         self.post_message(self.ModeChanged(mode))
 
     def focus_input(self) -> None:
@@ -1686,10 +1695,10 @@ class ChatInput(Vertical):
                     self._completion_manager.reset()
 
     def set_cursor_active(self, *, active: bool) -> None:
-        """Set whether the cursor should be actively blinking.
+        """Toggle input focus state (e.g., unfocus while agent is working).
 
-        When active=False (e.g., agent is working), disables cursor blink
-        so the cursor doesn't flash while waiting for a response.
+        Args:
+            active: Whether the input should be focused and accepting input.
         """
         if self._text_area:
             self._text_area.set_app_focus(has_focus=active)

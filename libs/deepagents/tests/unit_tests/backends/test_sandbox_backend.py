@@ -557,6 +557,11 @@ def test_edit_command_template_format() -> None:
     assert "__DEEPAGENTS_EDIT_EOF__" in cmd
 
 
+def test_edit_command_template_ends_with_newline() -> None:
+    """Test that _EDIT_COMMAND_TEMPLATE preserves the trailing newline after EOF."""
+    assert _EDIT_COMMAND_TEMPLATE.endswith("\n")
+
+
 def test_edit_tmpfile_template_format() -> None:
     """Test that _EDIT_TMPFILE_TEMPLATE can be formatted without KeyError."""
     old_b64 = base64.b64encode(b"/tmp/old").decode("ascii")
@@ -683,7 +688,6 @@ def test_sandbox_write_returns_correct_result_on_success() -> None:
 
     assert result.error is None
     assert result.path == "/test/file.txt"
-    assert result.files_update is None
 
 
 def test_sandbox_write_returns_error_on_empty_upload_response() -> None:

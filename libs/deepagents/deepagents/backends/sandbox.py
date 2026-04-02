@@ -22,6 +22,7 @@ from typing import Final
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
+    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -33,7 +34,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
 )
-from deepagents.backends.utils import _get_file_type, create_file_data
+from deepagents.backends.utils import _get_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -115,11 +116,12 @@ with open(path, 'wb') as f:
 print(json.dumps({{'count': count}}))
 " 2>&1 <<'__DEEPAGENTS_EDIT_EOF__'
 {payload_b64}
-__DEEPAGENTS_EDIT_EOF__"""
+__DEEPAGENTS_EDIT_EOF__
+"""
 """Server-side file edit via `execute()`.
 
 Reads the file, performs string replacement, and writes back — all on the
-sandbox.  The payload (path, old/new strings, replace_all flag) is passed as
+sandbox. The payload (path, old/new strings, replace_all flag) is passed as
 base64-encoded JSON via heredoc stdin to avoid shell escaping issues.
 
 Output: single-line JSON with `{{"count": N}}` on success or `{{"error": ...}}`
@@ -127,6 +129,9 @@ on failure.
 
 Used for payloads under `_EDIT_INLINE_MAX_BYTES`; larger payloads fall back
 to `_edit_via_upload()` which transfers old/new strings as temp files.
+
+Keeps a trailing newline after `__DEEPAGENTS_EDIT_EOF__` so integrations that
+detect end-of-input on a newline-delimited heredoc feed can observe completion.
 """
 
 _EDIT_INLINE_MAX_BYTES: Final = 50_000
@@ -366,8 +371,8 @@ except PermissionError:
             return ReadResult(error=f"File '{file_path}': {data['error']}")
 
         return ReadResult(
-            file_data=create_file_data(
-                data["content"],
+            file_data=FileData(
+                content=data["content"],
                 encoding=data.get("encoding", "utf-8"),
             )
         )
@@ -416,7 +421,7 @@ except PermissionError:
         if responses[0].error:
             return WriteResult(error=f"Failed to write file '{file_path}': {responses[0].error}")
 
-        return WriteResult(path=file_path, files_update=None)
+        return WriteResult(path=file_path)
 
     def edit(
         self,
@@ -489,7 +494,6 @@ except PermissionError:
 
         return EditResult(
             path=file_path,
-            files_update=None,
             occurrences=data.get("count", 1),
         )
 
@@ -555,7 +559,6 @@ except PermissionError:
 
         return EditResult(
             path=file_path,
-            files_update=None,
             occurrences=data.get("count", 1),
         )
 
